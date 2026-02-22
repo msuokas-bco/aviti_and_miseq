@@ -2,7 +2,7 @@
 
 A Quarto-based R workflow for amplicon sequence variant (ASV) analysis from paired-end 16S rRNA sequencing data. The pipeline processes reads from two sequencing platforms — **Element Biosciences AVITI** and **Illumina MiSeq** — in parallel, then merges the results for a cross-platform comparison of community composition.
 
-The workflow is adapted from the [DADA2 pipeline tutorial](https://benjjneb.github.io/dada2/tutorial.html) and the Bioconductor Workflow for Microbiome Data Analysis by Benjamin Callahan.
+The workflow is adapted from the [DADA2 pipeline tutorial](https://benjjneb.github.io/dada2/tutorial.html) and the Bioconductor Workflow for Microbiome Data Analysis by Benjamin Callahan. The sequenced microbiome samples were collected in the Wood for Health project of the ERA-Net ForestValue program. The project’s lead partner was the Unit of Measurement Technology at the University of Oulu. Experimental design and laboratory work was performed by Ilse Ekman and Pekka Kilpeläinen and original data analysis by Oksana Suokas.
 
 ---
 
@@ -61,16 +61,6 @@ Each platform is processed independently through the full DADA2 workflow. Result
 | `eulerr` | Euler/Venn diagrams for ASV overlap |
 | `scater` | Single-cell/microbiome utilities |
 
-Install all packages with:
-
-```r
-if (!requireNamespace("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
-
-BiocManager::install(c("dada2", "mia", "Biostrings", "scater"))
-
-install.packages(c("vegan", "tidyverse", "ape", "kableExtra", "patchwork",
-                   "ggthemes", "ggrepel", "ggpubr", "ggsci", "hrbrthemes", "eulerr"))
 ```
 
 ### Reference Databases
@@ -98,22 +88,6 @@ project/
 ├── aviti_results/              # Output directory (created automatically)
 └── miseq_results/              # Output directory (created automatically)
 ```
-
-### Input File Naming
-
-| Platform | Forward reads | Reverse reads |
-|---|---|---|
-| AVITI | `SAMPLENAME_TR1.fastq.gz` | `SAMPLENAME_TR2.fastq.gz` |
-| MiSeq | `SAMPLENAME_TR1.fastq` | `SAMPLENAME_TR2.fastq` |
-
-Sample names are extracted from the filename prefix before the first `-` character.
-
-### Metadata Format
-
-Both `aviti_metadata.tsv` and `miseq_metadata.tsv` must contain a `Sampleid` column that matches the sample names derived from the read filenames. Additional columns are carried through as sample metadata.
-
----
-
 ## Usage
 
 ### 1. Prepare reads
@@ -168,36 +142,6 @@ After both platforms are processed, the pipeline:
 - Performs **beta-diversity** analysis (Bray-Curtis PCoA) to assess community structure concordance.
 - Identifies **shared and platform-specific ASVs** using Euler diagrams and abundance tables.
 - Re-evaluates platform-specific ASVs after **filtering rare variants** (total abundance < 100), which removes the vast majority of platform-specific differences.
-
----
-
-## Outputs
-
-### Per platform (`aviti_results/` and `miseq_results/`)
-
-| File | Description |
-|---|---|
-| `qfwd.rds`, `qrev.rds` | Quality profile objects |
-| `out.rds` | Filter and trim read count summary |
-| `errFwd.rds`, `errRev.rds` | Error rate models |
-| `dadaFwds.rds`, `dadaRevs.rds` | DADA2 denoised read objects |
-| `merged.rds` | Merged paired-end reads |
-| `seqtabnochim.rds` | Chimera-filtered ASV table |
-| `taxa.rds` | Taxonomy assignments |
-| `tse.rds` | Final `TreeSummarizedExperiment` object |
-| `repseq.fasta` | Representative ASV sequences |
-| `taxonomy.tsv` | Taxonomy table (Kingdom → Species) |
-| `asv_table.tsv` | ASV count table |
-| `metadata.tsv` | Sample metadata |
-
-### Cross-platform comparison
-
-| File | Description |
-|---|---|
-| `aviti_only_asvs.tsv` | Platform-specific ASVs unique to AVITI |
-| `miseq_only_asvs.tsv` | Platform-specific ASVs unique to MiSeq |
-
-The rendered HTML document contains all visualisations inline.
 
 ---
 
