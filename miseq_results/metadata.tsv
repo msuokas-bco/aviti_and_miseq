@@ -1,0 +1,15 @@
+Sampleid	Sampleid.1	Sample_name	Platform	Surface	Material	Orientation	DNA_concentration	Culture_result
+A001	A153	Miseq_F1	Miseq	Floor	Wood	horizontal	0,066	32
+A002	A154	Miseq_F2	Miseq	Floor	Vinyl	horizontal	0,015	24
+A003	A155	Miseq_F3	Miseq	Floor	Ceramic	horizontal	0,072	12
+A004	A156	Miseq_P1	Miseq	Side_area	Wood	horizontal	0,057	36
+A005	A157	Miseq_P2	Miseq	Side_area	Metal	horizontal	0,05	37
+A006	A158	Miseq_W1	Miseq	Wall	Gypsum	vertical	0,04	3
+A007	A159	Miseq_W2	Miseq	Wall	Wood	vertical	0,024	1
+A008	A160	Miseq_W3	Miseq	Wall	Wood	vertical	0,009	0
+A009	A161	Miseq_T1	Miseq	Table	Composite	horizontal	0,055	49
+A010	A162	Miseq_T2	Miseq	Table	Wood	horizontal	0,037	74
+A011	A163	Miseq_WF1	Miseq	Window_frame	Wood	horizontal	0,083	9
+A012	A164	Miseq_WF2	Miseq	Window_frame	Metal	horizontal	0,021	15
+A013	A165	Miseq_C1	Miseq	Clean_side	Laminate	horizontal	0,019	6
+A014	A166	Miseq_Neg.Cont	Miseq	Neg_control	na	na	0,012	na

@@ -1,0 +1,15 @@
+Sampleid	Sampleid.1	Sample_name	Platform	Surface	Material	Orientation	DNA_concentration	Culture_result
+A153	A153	Aviti_F1	Aviti	Floor	Wood	horizontal	0,066	32
+A154	A154	Aviti_F2	Aviti	Floor	Vinyl	horizontal	0,015	24
+A155	A155	Aviti_F3	Aviti	Floor	Ceramic	horizontal	0,072	12
+A156	A156	Aviti_P1	Aviti	Side_area	Wood	horizontal	0,057	36
+A157	A157	Aviti_P2	Aviti	Side_area	Metal	horizontal	0,05	37
+A158	A158	Avit_W1	Aviti	Wall	Gypsum	vertical	0,04	3
+A159	A159	Avit_W2	Aviti	Wall	Wood	vertical	0,024	1
+A160	A160	Aviti_W3	Aviti	Wall	Wood	vertical	0,009	0
+A161	A161	Aviti_T1	Aviti	Table	Composite	horizontal	0,055	49
+A162	A162	Aviti_T2	Aviti	Table	Wood	horizontal	0,037	74
+A163	A163	Aviti_WF1	Aviti	Window_frame	Wood	horizontal	0,083	9
+A164	A164	Aviti_WF2	Aviti	Window_frame	Metal	horizontal	0,021	15
+A165	A165	Aviti_C1	Aviti	Clean_side	Laminate	horizontal	0,019	6
+A166	A166	Aviti_Neg.Cont	Aviti	Neg_control	na	na	0,012	na
