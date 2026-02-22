@@ -47,6 +47,7 @@ Each platform is processed independently through the full DADA2 workflow. Result
 
 ### R Packages
 
+```
 | Package | Purpose |
 |---|---|
 | `dada2` | Core amplicon denoising workflow |
@@ -60,19 +61,18 @@ Each platform is processed independently through the full DADA2 workflow. Result
 | `ggthemes`, `ggrepel`, `ggpubr`, `ggsci`, `hrbrthemes` | Plotting utilities |
 | `eulerr` | Euler/Venn diagrams for ASV overlap |
 | `scater` | Single-cell/microbiome utilities |
-
 ```
 
 ### Reference Databases
 
-Download the SILVA reference files and place them in `~/reference/`:
 
+Download the SILVA reference files and place them in `~/reference/`:
+```
 - `silva_nr99_v138.2_toGenus_trainset.fa.gz` — for genus-level taxonomy assignment
 - `silva_v138.2_assignSpecies.fa.gz` — for species-level assignment
-
+```
 SILVA reference files are available from the [DADA2 taxonomy reference page](https://benjjneb.github.io/dada2/training.html).
 
-´´´
 
 ## Project Structure
 
