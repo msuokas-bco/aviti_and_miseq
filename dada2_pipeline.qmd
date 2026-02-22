@@ -1,0 +1,1292 @@
+---
+title: "Dada2 pipeline for MiSeq and AVITI reads"
+format:
+    html:
+        theme: united
+editor: visual
+always_allow_html: yes
+---
+
+```{js, echo = FALSE}
+
+document.addEventListener("DOMContentLoaded", function() {
+  // Function to get computed color from CSS variables or computed styles
+  function getThemeColor(varName, fallback) {
+    const root = document.documentElement;
+    const color = getComputedStyle(root).getPropertyValue(varName).trim();
+    return color || fallback;
+  }
+  
+  // Extract theme colors from Quarto
+  const primaryColor = getThemeColor('--bs-primary', '#0d6efd');
+  const secondaryColor = getThemeColor('--bs-secondary', '#6c757d');
+  const bodyBg = getThemeColor('--bs-body-bg', '#ffffff');
+  const bodyColor = getThemeColor('--bs-body-color', '#212529');
+  const borderColor = getThemeColor('--bs-border-color', '#dee2e6');
+  
+  // For striped rows, try to get the striped background color
+  const stripedBg = getThemeColor('--bs-table-striped-bg', 'rgba(0, 0, 0, 0.05)');
+  
+  // Try to get code block background color - using light variant
+  const codeBg = getThemeColor('--bs-light', getThemeColor('--bs-light-bg', '#f8f9fa'));
+  
+  // Log colors for debugging
+  console.log('Theme colors:', {
+    primary: primaryColor,
+    secondary: secondaryColor,
+    bodyBg: bodyBg,
+    bodyColor: bodyColor,
+    border: borderColor,
+    striped: stripedBg,
+    codeBg: codeBg
+  });
+  
+  // Select all tables (adjust selector as needed)
+  const tables = document.querySelectorAll('table.table, .quarto-table table');
+  
+  tables.forEach(table => {
+    // Style table border
+    table.style.borderColor = borderColor;
+    
+    // Style header
+    const header = table.querySelector('thead');
+    if (header) {
+      header.style.backgroundColor = primaryColor;
+      header.style.color = '#ffffff'; // Usually white text on primary color
+      header.style.borderColor = primaryColor;
+      
+      // Style header cells
+      const headerCells = header.querySelectorAll('th');
+      headerCells.forEach(cell => {
+        cell.style.borderColor = 'rgba(255, 255, 255, 0.3)';
+      });
+    }
+    
+    // Style body rows
+    const rows = table.querySelectorAll('tbody > tr');
+    rows.forEach((row, index) => {
+      if (index % 2 === 0) {
+        // Even rows - use stripped background
+        row.style.backgroundColor = stripedBg;
+      } else {
+        // Odd rows - use body background
+        row.style.backgroundColor = bodyBg;
+      }
+      
+      // Style cells
+      const cells = row.querySelectorAll('td');
+      cells.forEach(cell => {
+        cell.style.borderColor = borderColor;
+        cell.style.color = bodyColor;
+      });
+    });
+    
+    // Add hover effect
+    table.addEventListener('mouseover', function(e) {
+      const row = e.target.closest('tbody tr');
+      if (row) {
+        row.style.backgroundColor = secondaryColor;
+        row.style.color = '#ffffff';
+        row.style.transition = 'all 0.2s ease';
+      }
+    });
+    
+    table.addEventListener('mouseout', function(e) {
+      const row = e.target.closest('tbody tr');
+      if (row) {
+        const index = Array.from(row.parentElement.children).indexOf(row);
+        row.style.backgroundColor = index % 2 === 0 ? stripedBg : bodyBg;
+        row.style.color = bodyColor;
+      }
+    });
+  });
+  
+  // Style code chunks
+  console.log('Setting up code chunk styles');
+  
+  const codeChunks = document.querySelectorAll('div.sourceCode');
+  console.log('Found code chunks:', codeChunks.length);
+  
+  // Create a style element to inject CSS rules
+  // We'll use a nice constant light color for background since Quarto's inline style is hard to override
+  const styleEl = document.createElement('style');
+  styleEl.textContent = `
+    div.sourceCode {
+      border-left: 4px solid ${primaryColor} !important;
+      border-radius: 4px !important;
+    }
+    
+    p code, li code, td code, th code {
+      background-color: ${codeBg} !important;
+      color: ${primaryColor} !important;
+      padding: 0.2em 0.4em !important;
+      border-radius: 3px !important;
+    }
+  `;
+  document.head.appendChild(styleEl);
+  
+  console.log('Code chunk styles injected - border will use theme primary color');
+});
+```
+
+```{r global_options, include = FALSE}
+
+# Enables use of different font sizes inside code chunks
+def.chunk.hook  <- knitr::knit_hooks$get("chunk")
+knitr::knit_hooks$set(chunk = function(x, options) {
+  x <- def.chunk.hook(x, options)
+  ifelse(options$size != "normalsize",
+         paste0("\n \\", options$size,"\n\n", x,
+                "\n\n \\normalsize"), x)
+})
+
+# Global options
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+
+```
+
+The workflow is modified from "Dada2 pipeline guide" and "Bioconductor Workflow for Microbiome Data Analysis: from raw reads to community analyses" by Benjamin Callahan.
+
+Read processing part will create separate result directories and files for Aviti and Miseq. Later ASV table are merged together, when data between two platforms are compared.
+
+Prior dada2 processing, forward and reverse primers were trimmed with cutadapt.
+
+```{r libraries, include = FALSE}
+
+library(dada2)
+library(mia)
+library(vegan)
+library(Biostrings)
+library(tidyverse)
+library(ape)
+library(kableExtra)
+library(patchwork)
+library(ggthemes)
+library(ggrepel)
+library(ggpubr)
+library(ggsci)
+library(hrbrthemes)
+library(eulerr)
+library(scater)
+
+```
+
+### Aviti read processing
+
+#### File locations and variables
+
+```{r aviti_variables, size = "small"}
+
+# Paths
+aviti <- "aviti_reads/"
+training <- "~/reference/silva_nr99_v138.2_toGenus_trainset.fa.gz"
+species <- "~/reference/silva_v138.2_assignSpecies.fa.gz"
+aviti_meta <- "aviti_metadata.tsv"
+aviti_export <- "aviti_results/"
+
+#Creates results directory
+dir.create(aviti_export)
+
+# Variables
+truncation <- c(260,200)
+phi <- TRUE
+meta_1stcol <- "Sampleid"
+
+```
+
+#### File and sample lists
+
+```{r aviti_lists, size = "small"}
+
+#List files sequence files in source directory
+list.files(aviti)
+
+# Forward read names: SAMPLENAME_TR1.fastq.gz
+fnFwds <- sort(list.files(aviti, pattern = "_TR1.fastq",
+                          full.names = TRUE))
+
+# Reverse read names: SAMPLENAME_TR2.fastq.gz
+fnRevs <- sort(list.files(aviti, pattern = "_TR2.fastq",
+                          full.names = TRUE))
+
+# Extract sample names to the list
+sample.names <- sapply(strsplit(basename(fnFwds), "-"), `[`, 1)
+
+```
+
+#### Read quality plots
+
+Read quality from aggregated sequence data (200 000)
+
+```{r aviti_quality, size = "small", eval = FALSE}
+
+qfwd <- plotQualityProfile(fnFwds, aggregate = TRUE,
+                           n = 2e05)
+saveRDS(qfwd, file = paste0(aviti_export, "qfwd.rds"))
+
+qrev <- plotQualityProfile(fnRevs, aggregate = TRUE,
+                           n = 2e05)
+saveRDS(qrev, file = paste0(aviti_export, "qrev.rds"))
+
+```
+
+Plot forward and reverse read qualities. Data can be used to evaluate proper truncation length for filter and trim step.
+
+```{r aviti_qplots, size = "small", fig.dim = c(12,7)}
+
+qfwd <- readRDS(paste0(aviti_export, "qfwd.rds"))
+qrev <- readRDS(paste0(aviti_export, "qrev.rds"))
+
+qfwd <- qfwd + ggtitle("Forward reads") + theme_pander(base_size = 18)
+qrev <- qrev + ggtitle("Reverse reads") + theme_pander(base_size = 18)
+
+qfwd + qrev
+
+```
+
+#### Filter and trim reads
+
+Create output lists for trim and filter function
+
+```{r aviti_lists2, size = "small"}
+
+# Filtered read files are placed in filtered subdirectory
+filtFwds <- file.path(aviti, "filtered", paste0(sample.names,
+                                                "_F_filt.fastq.gz"))
+
+filtRevs <- file.path(aviti, "filtered", paste0(sample.names,
+                                                "_R_filt.fastq.gz"))
+
+```
+
+Execute the function
+
+```{r aviti_filter, size = "small", eval = FALSE}
+
+# Default parameters except truncLen and multithread
+out <- filterAndTrim(fnFwds, filtFwds, fnRevs, filtRevs,
+                     truncLen = truncation,
+                     maxN = 0, maxEE = 2, truncQ = 2,
+                     compress = TRUE, multithread = 8,
+                     rm.phix = phi)
+
+# Save output object to file
+saveRDS(out, paste0(aviti_export, "out.rds"))
+
+```
+
+#### Learn error rates
+
+```{r aviti_errors, size = "small", eval = FALSE}
+
+# Forward read error rate
+errFwd <- learnErrors(filtFwds, multithread = 8, randomize = TRUE)
+
+# Reverse read error rate
+errRev <- learnErrors(filtRevs, multithread = 8, randomize = TRUE)
+
+# save objects to files
+saveRDS(errFwd, paste0(aviti_export, "errFwd.rds"))
+saveRDS(errRev, paste0(aviti_export, "errRev.rds"))
+
+```
+
+Plot error profiles
+
+```{r aviti_eplot, size = "small", fig.dim = c(12,10)}
+
+errFwd <- readRDS(paste0(aviti_export, "errFwd.rds"))
+
+# Plot error rate profile for forward reads
+plot_fwd <- plotErrors(errFwd, nominalQ=TRUE) + ggtitle ("Forward") +
+    theme_pander(base_size = 18)
+
+errRev <- readRDS(paste0(aviti_export, "errRev.rds"))
+
+# Plot error rate profile for reverse reads
+plot_rev <- plotErrors(errRev, nominalQ=TRUE) + ggtitle("Reverse") +
+        theme_pander(base_size = 18)
+
+plot_fwd/plot_rev
+
+```
+
+#### Denoise reads
+
+```{r aviti_denoise, size="small", eval = FALSE}
+
+# Denoise both forward and reverse reverse read using error rate profiles
+dadaFwds <- dada(filtFwds, err = errFwd, multithread = 8)
+dadaRevs <- dada(filtRevs, err = errRev, multithread = 8)
+
+# Save objects to files
+saveRDS(dadaFwds, paste0(aviti_export, "dadaFwds.rds"))
+saveRDS(dadaRevs, paste0(aviti_export, "dadaRevs.rds"))
+
+```
+
+#### Merge reads
+
+```{r aviti_merge, size = "small", eval = FALSE}
+
+dadaFwds <- readRDS(paste0(aviti_export, "dadaFwds.rds"))
+dadaRevs <- readRDS(paste0(aviti_export, "dadaRevs.rds"))
+
+# Merge denoised paired-end reads
+merged <- mergePairs(dadaFwds, filtFwds, dadaRevs, filtRevs,
+                     verbose = TRUE)
+
+# Save object to a file
+saveRDS(merged, paste0(aviti_export, "merged.rds"))
+
+```
+
+#### Build ASV table
+
+```{r aviti_asvtable, size = "small"}
+
+merged <- readRDS(paste0(aviti_export, "merged.rds"))
+
+# Create sequence table. Rownames are sequences, colnames samples
+seqtab <- makeSequenceTable(merged)
+
+# Dimensions of ASV table
+dim(seqtab)
+
+```
+
+Remove chimeric variants
+
+```{r aviti_chimera, size = "small", eval = FALSE}
+
+# Remove chimeras
+seqtab.nochim <- removeBimeraDenovo(seqtab, method = "consensus",                                    multithread = TRUE, verbose = TRUE)
+
+# Dimensions
+dim(seqtab.nochim)
+
+# Save object to file
+saveRDS(seqtab.nochim, paste0(aviti_export, "seqtabnochim.rds"))
+
+```
+
+Plot ASV length distribution ( relative abundance is not accounted for).
+
+```{r aviti_asv_length, warning = FALSE, size = "small"}
+
+seqtab.nochim <- readRDS(paste0(aviti_export, "seqtabnochim.rds"))
+
+# Inspect sequence length distributions
+asv_lengths <- data.frame(length = nchar(colnames(seqtab.nochim)))
+
+# Plot histogram
+ggplot(asv_lengths, aes(x = length)) +
+  geom_histogram(binwidth = 1, fill = "orangered") +
+  labs(title = "ASV kength Distribution",
+       x = "Merged Length (nt)",
+       y = "No of Reads") + xlim(300,500) +
+  theme_pander(base_size = 14)
+
+```
+
+#### A denoising summary table
+
+```{r aviti_summary, size = "small"}
+
+# Read all objects from files
+out <- readRDS(paste0(aviti_export, "out.rds"))
+dadaFwds <- readRDS(paste0(aviti_export, "dadaFwds.rds"))
+dadaRevs <- readRDS(paste0(aviti_export, "dadaRevs.rds"))
+merged <- readRDS(paste0(aviti_export, "merged.rds"))
+seqtab.nochim <- readRDS(paste0(aviti_export, "seqtabnochim.rds"))
+
+# Get values for each sample
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFwds, getN), sapply(dadaRevs, getN),
+               sapply(merged, getN), rowSums(seqtab.nochim),
+               rowSums(seqtab.nochim != 0))
+
+# If processing a single sample, remove the sapply calls: e.g.
+# replace sapply(dadaFs, getN) with getN(dadaFs)
+
+# Replace column names
+colnames(track) <- c("Input", "Filtered", "DenoisedF", "DenoisedR",
+                     "Merged", "Non-chimeric","Variants")
+
+# Replace row names
+rownames(track) <- sample.names
+
+# Table
+kable(track, format = "html") %>%
+  kable_styling(bootstrap_options = "striped")
+
+```
+
+#### Assign taxonomy
+
+```{r aviti_silva, size = "small", eval = FALSE}
+
+seqtab.nochim <- readRDS(paste0(aviti_export, "seqtabnochim.rds"))
+
+# Assign taxa up to genus level
+taxa <- assignTaxonomy(seqtab.nochim, training, multithread = 10)
+
+# Assign species that are perfectly matched 
+taxa <- addSpecies(taxa, species)
+
+# Save object to a file
+saveRDS(taxa, paste0(aviti_export, "taxa.rds"))
+
+```
+
+#### TreeSummarizedExperiment object
+
+The object can hold all necessary information needed for microbiome data analysis.
+
+```{r aviti_object, size = "small"}
+
+# Read project metadata file
+samples_meta <- read_tsv(aviti_meta)
+
+# Read representative sequences
+taxa <- readRDS(paste0(aviti_export, "taxa.rds"))
+repseq <- DNAStringSet(rownames(taxa))
+
+# Modify taxonomy table
+taxtable <- taxa
+rownames(taxtable) <- paste0("ASV", seq(nrow(taxtable)))
+colnames(taxtable) <- c("Kingdom", "Phylum", "Class", "Order", "Family",
+                        "Genus", "Species")
+
+# Modify counts table
+assay_data <- seqtab.nochim
+colnames(assay_data) <- paste0("ASV", seq(ncol(assay_data)))
+
+# Confirm that order of samples is same in assay data and metadata!
+rownames(assay_data) <- sample.names
+assay_data <- t(assay_data)
+
+# Tse object
+tse <- TreeSummarizedExperiment(assays = list(counts = assay_data),
+                                rowData = taxtable,
+                                colData = samples_meta)
+referenceSeq(tse) <- repseq
+
+tse
+
+```
+
+Removal of non-bacterial, mitochondrial and clhloroplastic ASV's
+
+```{r aviti_filter_taxa, size = "small"}
+
+# Filter ASV that are bacteria or archaea
+tse <- tse[rowData(tse)$Kingdom %in% c("Bacteria", "Archaea")]
+
+# Filter ASV that are not mitochondrial, keep emtpty
+tse <- tse[rowData(tse)$Family != "Mitochondria" | is.na(rowData(tse)$Family)]
+
+# Filter ASV that are not chloroplastic, keep empty
+tse <- tse[rowData(tse)$Order != "Chloroplast" | is.na(rowData(tse)$Order)]
+
+# Final dimensions
+dim(tse)
+
+```
+
+#### Write final object into files
+
+```{r aviti_results, size = "small"}
+
+# Save object
+saveRDS(tse, (paste0(aviti_export,"tse.rds")))
+
+# Save representative sequences as fasta
+tse %>% referenceSeq() %>% 
+  writeXStringSet(paste0(aviti_export,"repseq.fasta"),
+                  append = FALSE, compress = FALSE,
+                  format = "fasta")
+
+# Save taxonomy table as tsv
+taxfile <- as.data.frame(rowData(tse))
+taxfile %>% rownames_to_column(var = "Variant") %>% 
+  write_tsv(file = paste0(aviti_export, "taxonomy.tsv"))
+
+# Save abundance table as tsv
+ASV_counts <- as.data.frame(assays(tse)$counts)
+ASV_counts %>% rownames_to_column(var= "Variant") %>%
+write_tsv(file = paste0(aviti_export, "asv_table.tsv"))
+
+# Save metadata as tsv
+metadf <- data.frame(Sampleid = rownames(colData(tse)), colData(tse))
+write_tsv(metadf, paste0(aviti_export, "metadata.tsv"))
+
+```
+
+### MiSeq read processing
+
+#### File locations and variables
+
+```{r miseq_variables, size = "small"}
+
+# Paths
+miseq <- "miseq_reads/"
+training <- "~/reference/silva_nr99_v138.2_toGenus_trainset.fa.gz"
+species <- "~/reference/silva_v138.2_assignSpecies.fa.gz"
+miseq_meta <- "miseq_metadata.tsv"
+miseq_export <- "miseq_results/"
+
+#Creates results directory
+dir.create(miseq_export)
+
+# Variables
+truncation <- c(260,200)
+phi <- TRUE
+meta_1stcol <- "Sampleid"
+
+```
+
+#### File and sample lists
+
+```{r miseq_lists, size = "small"}
+
+#List source files
+list.files(miseq)
+
+# Forward read names: SAMPLENAME_TR1.fastq
+fnFwds <- sort(list.files(miseq, pattern = "_TR1.fastq",
+                          full.names = TRUE))
+
+# Reverse read names: SAMPLENAME_TR2.fastq
+fnRevs <- sort(list.files(miseq, pattern = "_TR2.fastq",
+                          full.names = TRUE))
+
+# Extract sample names
+sample.names <- sapply(strsplit(basename(fnFwds), "-"), `[`, 1)
+
+```
+
+#### Read quality plots
+
+Read quality from aggregated sequence data (200 000)
+
+```{r miseq_quality, size = "small", eval = FALSE}
+
+qfwd <- plotQualityProfile(fnFwds, aggregate = TRUE,
+                           n = 2e05)
+saveRDS(qfwd, file = paste0(miseq_export, "qfwd.rds"))
+
+qrev <- plotQualityProfile(fnRevs, aggregate = TRUE,
+                           n = 2e05)
+saveRDS(qrev, file = paste0(miseq_export, "qrev.rds"))
+
+```
+
+Plot forward and reverse read qualities. Data can be used to evaluate proper truncation length for filter and trim step.
+
+```{r miseq_qplot, size = "small", fig.dim = c(12,7)}
+
+qfwd <- readRDS(paste0(miseq_export, "qfwd.rds"))
+qrev <- readRDS(paste0(miseq_export, "qrev.rds"))
+
+qfwd <- qfwd + ggtitle("Forward reads") + theme_pander(base_size = 18)
+qrev <- qrev + ggtitle("Reverse reads") + theme_pander(base_size = 18)
+
+qfwd + qrev
+
+```
+
+#### Filter and trim reads
+
+Create output lists for trim and filter function
+
+```{r miseq_lists2, size = "small"}
+
+# Filtered read files are placed in filtered subdirectory
+filtFwds <- file.path(miseq, "filtered", paste0(sample.names,
+                                                "_F_filt.fastq.gz"))
+
+filtRevs <- file.path(miseq, "filtered", paste0(sample.names,
+                                                "_R_filt.fastq.gz"))
+
+```
+
+Execute the function
+
+```{r miseq_filter, size = "small", eval = FALSE}
+
+# Default parameters except truncLen and multithread
+out <- filterAndTrim(fnFwds, filtFwds, fnRevs, filtRevs,
+                     truncLen = truncation,
+                     maxN = 0, maxEE = 2, truncQ = 2,
+                     compress = TRUE, multithread = 8,
+                     rm.phix = phi)
+
+# Save output object to file
+saveRDS(out, paste0(miseq_export, "out.rds"))
+
+```
+
+#### Learn error rate profiles
+
+```{r miseq_errors, size = "small", eval = FALSE}
+
+# Forward read error rate
+errFwd <- learnErrors(filtFwds, multithread = 8, randomize = TRUE)
+
+# Reverse read error rate
+errRev <- learnErrors(filtRevs, multithread = 8, randomize = TRUE)
+
+# save objects to files
+saveRDS(errFwd, paste0(miseq_export, "errFwd.rds"))
+saveRDS(errRev, paste0(miseq_export, "errRev.rds"))
+
+```
+
+Plot error profiles
+
+```{r miseq_eplots, size = "small", fig.dim = c(12,10)}
+
+errFwd <- readRDS(paste0(miseq_export, "errFwd.rds"))
+
+# Plotting error rate profile for forward reads
+plot_fwd <- plotErrors(errFwd, nominalQ=TRUE) + ggtitle ("Forward") +
+    theme_pander(base_size = 18)
+
+errRev <- readRDS(paste0(miseq_export, "errRev.rds"))
+
+# Plotting error rate profile for reverse reads
+plot_rev <- plotErrors(errRev, nominalQ=TRUE) + ggtitle("Reverse") +
+        theme_pander(base_size = 18)
+
+plot_fwd/plot_rev
+
+```
+
+#### Denoise reads
+
+```{r miseq_denoise, size="small", eval = FALSE}
+
+# Denoise both forward and reverse reverse read using error rate profiles
+dadaFwds <- dada(filtFwds, err = errFwd, multithread = 8)
+dadaRevs <- dada(filtRevs, err = errRev, multithread = 8)
+
+# Save objects to files
+saveRDS(dadaFwds, paste0(miseq_export, "dadaFwds.rds"))
+saveRDS(dadaRevs, paste0(miseq_export, "dadaRevs.rds"))
+
+```
+
+#### Merge reads
+
+```{r miseq_merge, size = "small", eval = FALSE}
+
+dadaFwds <- readRDS(paste0(miseq_export, "dadaFwds.rds"))
+dadaRevs <- readRDS(paste0(miseq_export, "dadaRevs.rds"))
+
+# Merge denoised paired-end reads
+merged <- mergePairs(dadaFwds, filtFwds, dadaRevs, filtRevs,
+                     verbose = TRUE)
+
+# Save object to a file
+saveRDS(merged, paste0(miseq_export, "merged.rds"))
+
+```
+
+#### Build ASV table
+
+```{r miseq_asv_table, size = "small"}
+
+merged <- readRDS(paste0(miseq_export, "merged.rds"))
+
+# Create sequence table. Rownames are sequences, colnames samples
+seqtab <- makeSequenceTable(merged)
+
+# Dimensions of ASV table
+dim(seqtab)
+
+```
+
+Remove chimeric variants
+
+```{r miseq_chimera, size = "small", eval = FALSE}
+
+
+seqtab.nochim <- removeBimeraDenovo(seqtab, method = "consensus",
+                                    multithread = TRUE, verbose = TRUE)
+
+# Dimensions
+dim(seqtab.nochim)
+
+# Save object to a file
+saveRDS(seqtab.nochim, paste0(miseq_export, "seqtabnochim.rds"))
+
+```
+
+Plot ASV length distribution (relative abundance is not accounted for)
+
+```{r miseq_asv_length, warning = FALSE, size = "small"}
+
+seqtab.nochim <- readRDS(paste0(miseq_export, "seqtabnochim.rds"))
+
+# Inspect sequence length distributions
+asv_lengths <- data.frame(length = nchar(colnames(seqtab.nochim)))
+
+# Plot histogram
+ggplot(asv_lengths, aes(x = length)) +
+  geom_histogram(binwidth = 1, fill = "orangered") +
+  labs(title = "ASV length Distribution",
+       x = "Merged Length (nt)",
+       y = "No of Reads") + xlim(300,500) +
+  theme_pander(base_size = 14)
+```
+
+#### A denoising summary table
+
+```{r miseq_summary, size = "small"}
+
+# Read all objects from files
+out <- readRDS(paste0(miseq_export, "out.rds"))
+dadaFwds <- readRDS(paste0(miseq_export, "dadaFwds.rds"))
+dadaRevs <- readRDS(paste0(miseq_export, "dadaRevs.rds"))
+merged <- readRDS(paste0(miseq_export, "merged.rds"))
+seqtab.nochim <- readRDS(paste0(miseq_export, "seqtabnochim.rds"))
+
+# Get values for each sample
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFwds, getN), sapply(dadaRevs, getN),
+               sapply(merged, getN), rowSums(seqtab.nochim),
+               rowSums(seqtab.nochim != 0))
+
+# If processing a single sample, remove the sapply calls: e.g.
+# replace sapply(dadaFs, getN) with getN(dadaFs)
+
+# Replace column names
+colnames(track) <- c("Input", "Filtered", "DenoisedF", "DenoisedR",
+                     "Merged", "Non-chimeric","Variants")
+
+# Replace row names
+rownames(track) <- sample.names
+
+# Table
+kable(track, format = "html") %>% 
+    kable_styling(bootstrap_options = "striped")
+
+```
+
+#### Assign taxonomy
+
+```{r miseq_silva, size = "small", eval = FALSE}
+
+seqtab.nochim <- readRDS(paste0(miseq_export, "seqtabnochim.rds"))
+
+# Assign taxa up to genus level
+taxa <- assignTaxonomy(seqtab.nochim, training, multithread = 10)
+
+# Assign species that are perfectly matched 
+taxa <- addSpecies(taxa, species)
+
+# Save object to a file
+saveRDS(taxa, paste0(miseq_export, "taxa.rds"))
+
+```
+
+#### TreeSummarizedExperiment object
+
+```{r miseq_object, size = "small"}
+
+# Read project metadata file
+samples_meta <- read_tsv(miseq_meta)
+
+# Read representative sequences
+taxa <- readRDS(paste0(miseq_export, "taxa.rds"))
+repseq <- DNAStringSet(rownames(taxa))
+
+# Modify taxonomy table
+taxtable <- taxa
+rownames(taxtable) <- paste0("ASV", seq(nrow(taxtable)))
+colnames(taxtable) <- c("Kingdom", "Phylum", "Class", "Order", "Family",
+                        "Genus", "Species")
+
+# Modify counts table
+assay_data <- seqtab.nochim
+colnames(assay_data) <- paste0("ASV", seq(ncol(assay_data)))
+# Confirm that order of samples is same in assay data and metadata!
+rownames(assay_data) <- sample.names
+assay_data <- t(assay_data)
+
+# Tse object
+tse <- TreeSummarizedExperiment(assays = list(counts = assay_data),
+                                rowData = taxtable,
+                                colData = samples_meta)
+
+referenceSeq(tse) <- repseq
+
+tse
+
+```
+
+Removal of non-bacterial, mitochondrial and clhloroplastic ASV’s
+
+```{r miseq_taxa_filter, size = "small"}
+
+# Filter ASV that are bacteria or archaea
+tse <- tse[rowData(tse)$Kingdom %in% c("Bacteria", "Archaea")]
+
+# Filter ASV that are not mitochondrial, keep emtpty
+tse <- tse[rowData(tse)$Family != "Mitochondria" | is.na(rowData(tse)$Family)]
+
+# Filter ASV that are not chloroplastic, keep empty
+tse <- tse[rowData(tse)$Order != "Chloroplast" | is.na(rowData(tse)$Order)]
+
+# Final dimensions
+dim(tse)
+
+```
+
+#### Write final object into files
+
+```{r miseq_results, size = "small"}
+
+# Save object
+saveRDS(tse, (paste0(miseq_export,"tse.rds")))
+
+# Save representative sequences as fasta
+tse %>% referenceSeq() %>% 
+  writeXStringSet(paste0(miseq_export,"repseq.fasta"),
+                  append = FALSE, compress = FALSE,
+                  format = "fasta")
+
+# Save taxonomy table as tsv
+taxfile <- as.data.frame(rowData(tse))
+taxfile %>% rownames_to_column(var = "Variant") %>% 
+  write_tsv(file = paste0(miseq_export, "taxonomy.tsv"))
+
+# Save abundance table as tsv
+ASV_counts <- as.data.frame(assays(tse)$counts)
+ASV_counts %>% rownames_to_column(var= "Variant") %>%
+write_tsv(file = paste0(miseq_export, "asv_table.tsv"))
+
+# Save metadata as tsv
+metadf <- data.frame(Sampleid = rownames(colData(tse)), colData(tse))
+write_tsv(metadf, paste0(miseq_export, "metadata.tsv"))
+
+```
+
+### Comparison between two sequencing platforms
+
+In order to make direct comparison, it's necessary to merge dada2 results.
+
+```{r merge_data, size = "small", eval = FALSE}
+
+# Platform specific sequence tables
+aviti_seqtab <- readRDS("aviti_results/seqtabnochim.rds")
+miseq_seqtab <- readRDS("miseq_results/seqtabnochim.rds")
+
+# Join metadata
+aviti_meta <- read_tsv("aviti_metadata.tsv")
+miseq_meta <- read_tsv("miseq_metadata.tsv")
+combined <- rbind(aviti_meta,miseq_meta)
+
+# Replace Sampleid by Sample_name value
+anames <- aviti_meta$Sample_name
+mnames <- miseq_meta$Sample_name
+rownames(aviti_seqtab) <- anames
+rownames(miseq_seqtab) <- mnames
+
+# Merge ASV tables
+full_seqtab <- mergeSequenceTables(aviti_seqtab, miseq_seqtab)
+
+# Reassign taxonmy
+taxa <- assignTaxonomy(full_seqtab, training, multithread = 10)
+taxa <- addSpecies(taxa, species)
+
+# Representative sequences
+repseq <- DNAStringSet(rownames(taxa))
+
+# Taxonomy
+taxtable <- taxa
+rownames(taxtable) <- paste0("ASV", seq(nrow(taxtable)))
+colnames(taxtable) <- c("Kingdom", "Phylum", "Class", "Order", "Family",
+                        "Genus", "Species")
+
+# Abundanes table
+assay_data <- full_seqtab
+colnames(assay_data) <- paste0("ASV",
+                               seq(ncol(assay_data)))
+
+# make sure that order of samples is same in assay data and metadata
+rownames(assay_data) <- combined$Sample_name
+assay_data <- t(assay_data)
+
+# Tse object
+full_tse <- TreeSummarizedExperiment(assays = list(counts = assay_data),
+                                rowData = taxtable,
+                                colData = combined)
+referenceSeq(full_tse) <- repseq
+
+# Filter non-bacterial variants
+full_tse <- full_tse[rowData(full_tse)$Kingdom %in% c("Bacteria", "Archaea")]
+full_tse <- full_tse[rowData(full_tse)$Family != "Mitochondria" |
+                         is.na(rowData(full_tse)$Family)]
+full_tse <- full_tse[rowData(full_tse)$Order != "Chloroplast" |
+                         is.na(rowData(full_tse)$Order)]
+
+# Dimensions
+full_tse
+
+# Save new object to a file
+saveRDS(full_tse, "full_tse.rds")
+
+```
+
+Basic statistics of the merged data set
+
+```{r basic_stats, size = "small"}
+
+full_tse <- readRDS("full_tse.rds")
+
+# Dimensions
+dim(full_tse)
+
+# Sample by platform
+table(full_tse$Platform)
+
+# Read statistics
+summary(colSums(assay(full_tse)))
+
+```
+
+Rarefaction to 88000 reads. Step removes 3 samples from both platforms
+
+```{r, size = "small"}
+
+# Set seed for reproducibility
+set.seed(123)
+
+# Rarefy data
+tse_rar <- rarefyAssay(full_tse, min_size = 88000,
+                       replace = FALSE, name = "counts2")
+
+```
+
+Stress test indicates that 2D NMDS is a faithful representation of dissimilarity analysis results.
+
+```{r BC_stress_test, size = "small"}
+
+# Bray-Curtis dissimilarity
+nmds <- metaMDS(t(assay(tse_rar, "counts2")), distance = "bray")
+
+```
+
+Bray-Curtis NMDS plot between platforms maps same samples close to each other
+
+```{r bray-curtis, size = "small"}
+
+# Extract NMDS scores (sites)
+nmds_df <- as.data.frame(nmds$points)
+
+# Add metadata (sample names & platform)
+nmds_df$Sample_name <- colData(tse_rar)$Sample_name
+nmds_df$Platform    <- colData(tse_rar)$Platform
+
+# Make sure grouping is factor
+nmds_df$Platform <- factor(nmds_df$Platform, levels = c("Aviti", "Miseq"))
+
+# Plot
+ggplot(nmds_df, aes(MDS1, MDS2, color = Platform)) +
+  geom_point(size = 3) +
+  geom_text_repel(aes(label = Sample_name),
+                  size = 3,
+                  max.overlaps = Inf,
+                  box.padding = 0.4,
+                  point.padding = 0.3,
+                  segment.alpha = 0.4) +
+  scale_color_manual(values = c("steelblue", "orangered")) +
+  theme_pander() +
+  theme(
+    legend.position = "right",
+    panel.grid = element_blank(),
+    text = element_text(size = 14)
+  ) +
+  labs(x = "NMDS1", y = "NMDS2")
+
+```
+
+Permanova analysis
+
+```{r permanova, size = "small"}
+
+d <- vegdist(t(assay(tse_rar, "counts2")), method="bray")
+adonis2(d ~ Platform, data = colData(tse_rar))
+
+# Check dispersion
+bd <- betadisper(d, colData(tse_rar)$Platform)
+permutest(bd)
+
+```
+
+**Analysis results:**
+
+-   **R² = 0.014** Platform explains only about 1.4% of the variation in your microbial communities.
+
+-   **P-value = 0.993**: This is not statistically significant.
+
+-   **Dispersion analysis p-value = 0.856.**: Not significant and homogenuity requirements are fulfilled.
+
+Alpha diversity results show perfect correlation between two platforms
+
+```{r alpha_diversity, size = "small"}
+
+# Calculate alpha diversity
+alpha_div <- data.frame(
+  Sample_name = colData(tse_rar)$Sample_name,
+  Platform = colData(tse_rar)$Platform,
+  Shannon = diversity(t(assay(tse_rar, "counts2")), index = "shannon"),
+  Observed = colSums(assay(tse_rar, "counts2") > 0)
+)
+
+# Split sample_names by underscore
+alpha_div$Sample_name <- sub(".*_", "", alpha_div$Sample_name)
+
+# Split by platform
+aviti_alpha <- alpha_div[alpha_div$Platform == "Aviti", ]
+miseq_alpha <- alpha_div[alpha_div$Platform == "Miseq", ]
+
+# Match samples by Sample_name
+miseq_alpha <- miseq_alpha[match(aviti_alpha$Sample_name, miseq_alpha$Sample_name), ]
+
+# Reshape for plotting
+alpha_long <- rbind(
+  data.frame(Sample_name = aviti_alpha$Sample_name, 
+             Platform = "Aviti", 
+             Shannon = aviti_alpha$Shannon,
+             Observed = aviti_alpha$Observed),
+  data.frame(Sample_name = miseq_alpha$Sample_name, 
+             Platform = "Miseq", 
+             Shannon = miseq_alpha$Shannon,
+             Observed = miseq_alpha$Observed)
+)
+
+# Alpha diversity correlation
+p5 <- ggplot(data.frame(Aviti = aviti_alpha$Shannon, 
+                        MiSeq = miseq_alpha$Shannon),
+             aes(x = Aviti, y = MiSeq)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+  geom_point(size = 3, color = "steelblue") +
+  geom_smooth(method = "lm", se = TRUE, color = "orangered1") +
+  stat_cor(method = "pearson", label.x = 3.8, label.y = 6.5) +
+  theme_few(base_size = 14) +
+  labs(title = "Shannon Diversity", x = "Aviti", y = "MiSeq") +
+  coord_fixed()
+
+p6 <- ggplot(data.frame(Aviti = aviti_alpha$Observed, 
+                        MiSeq = miseq_alpha$Observed),
+             aes(x = Aviti, y = MiSeq)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+  geom_point(size = 3, color = "steelblue") +
+  geom_smooth(method = "lm", se = TRUE, color = "orangered") +
+  stat_cor(method = "pearson", label.x = 200, label.y = 1500) +
+  theme_few(base_size = 14) +
+  labs(title = "Observed ASVs", x = "Aviti", y = "MiSeq") +
+  coord_fixed()
+
+p5 | p6
+
+```
+
+Shared and unique ASV's between platforms
+
+```{r shared_asv, size = "small"}
+
+# Get abundance data
+counts <- assay(tse_rar, "counts2")
+
+# Identify samples by platform
+aviti_samples <- which(tse_rar$Platform == "Aviti")
+miseq_samples <- which(tse_rar$Platform == "Miseq")
+
+# Get ASVs present in each platform (considering all samples)
+aviti_asvs <- rownames(counts)[rowSums(counts[, aviti_samples] > 0) > 0]
+miseq_asvs <- rownames(counts)[rowSums(counts[, miseq_samples] > 0) > 0]
+
+# Identify platform-specific ASVs (MOVED HERE - MUST BE BEFORE USING THEM)
+aviti_only <- setdiff(aviti_asvs, miseq_asvs)
+miseq_only <- setdiff(miseq_asvs, aviti_asvs)
+shared <- intersect(aviti_asvs, miseq_asvs)
+
+# Print summary statistics
+cat("\n=== ASV Distribution Summary ===\n")
+cat("Total ASVs in Aviti:", length(aviti_asvs), "\n")
+cat("Total ASVs in MiSeq:", length(miseq_asvs), "\n")
+cat("Shared ASVs:", length(shared), "\n")
+cat("Aviti-only ASVs:", length(aviti_only), "\n")
+cat("MiSeq-only ASVs:", length(miseq_only), "\n")
+cat("Percentage shared:", round(length(shared)/length(union(aviti_asvs, miseq_asvs))*100, 1), "%\n\n")
+
+# Calculate total abundance for each category
+aviti_only_abundance <- sum(counts[aviti_only, aviti_samples])
+miseq_only_abundance <- sum(counts[miseq_only, miseq_samples])
+shared_abundance_aviti <- sum(counts[shared, aviti_samples])
+shared_abundance_miseq <- sum(counts[shared, miseq_samples])
+
+# Calculate totals per platform
+total_aviti <- sum(counts[, aviti_samples])
+total_miseq <- sum(counts[, miseq_samples])
+
+# Add text summary
+cat("\n=== Abundance Distribution ===\n\n")
+cat("AVITI PLATFORM:\n")
+cat("  Total reads:", format(total_aviti, big.mark = ","), "\n")
+cat("  Reads in shared ASVs:", format(shared_abundance_aviti, big.mark = ","), 
+    sprintf("(%.2f%%)", shared_abundance_aviti/total_aviti * 100), "\n")
+cat("  Reads in Aviti-only ASVs:", format(aviti_only_abundance, big.mark = ","), 
+    sprintf("(%.2f%%)", aviti_only_abundance/total_aviti * 100), "\n\n")
+
+cat("MISEQ PLATFORM:\n")
+cat("  Total reads:", format(total_miseq, big.mark = ","), "\n")
+cat("  Reads in shared ASVs:", format(shared_abundance_miseq, big.mark = ","), 
+    sprintf("(%.2f%%)", shared_abundance_miseq/total_miseq * 100), "\n")
+cat("  Reads in MiSeq-only ASVs:", format(miseq_only_abundance, big.mark = ","), 
+    sprintf("(%.2f%%)", miseq_only_abundance/total_miseq * 100), "\n\n")
+
+# Create bar plot showing percentage breakdown
+abundance_data <- data.frame(
+  Platform = rep(c("Aviti", "MiSeq"), each = 2),
+  Category = rep(c("Shared ASVs", "Platform-specific ASVs"), 2),
+  Percentage = c(
+    shared_abundance_aviti/total_aviti * 100,
+    aviti_only_abundance/total_aviti * 100,
+    shared_abundance_miseq/total_miseq * 100,
+    miseq_only_abundance/total_miseq * 100
+  ),
+  Reads = c(
+    shared_abundance_aviti,
+    aviti_only_abundance,
+    shared_abundance_miseq,
+    miseq_only_abundance
+  )
+)
+
+p1 <- ggplot(abundance_data, aes(x = Platform, y = Percentage, fill = Category)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.6) +
+  scale_fill_manual(values = c("Shared ASVs" = "steelblue", 
+                                "Platform-specific ASVs" = "orangered")) +
+  geom_text(aes(label = sprintf("%.1f%%", Percentage)), 
+            position = position_stack(vjust = 0.5), 
+            color = "white", size = 5, fontface = "bold") +
+  labs(title = "Read Distribution by ASV Category",
+       y = "Percentage of Reads (%)",
+       x = "") +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "bottom",
+        legend.title = element_blank())
+
+print(p1)
+
+# Create Euler diagram for ASV comparison
+count_fit <- euler(c(
+  "Aviti" = length(aviti_only),           # ASVs unique to Aviti
+  "MiSeq" = length(miseq_only),           # ASVs unique to MiSeq
+  "Aviti&MiSeq" = length(shared)          # ASVs shared between both
+))
+
+# Plot with custom colors
+plot(count_fit,
+     fills = list(fill = c("steelblue", "orangered"), alpha = 0.5),
+     quantities = TRUE,
+     labels = list(cex = 1.2),
+     main = "ASV Overlap Between Platforms")
+
+# Function to create detailed table for platform-specific ASVs
+create_platform_table <- function(asv_list, platform_name, tse_obj, platform_samples) {
+  if(length(asv_list) == 0) {
+    return(data.frame(Message = paste("No", platform_name, "-specific ASVs found")))
+  }
+  
+  # Get taxonomy and abundance data
+  tax_data <- as.data.frame(rowData(tse_obj)[asv_list, ])
+  counts_data <- assay(tse_obj, "counts2")[asv_list, platform_samples,
+                                           drop = FALSE]
+  
+  # Calculate statistics
+  result <- data.frame(
+    ASV = asv_list,
+    tax_data,
+    Total_Reads = rowSums(counts_data),
+    Mean_Abundance = rowMeans(counts_data),
+    Max_Abundance = apply(counts_data, 1, max),
+    N_Samples = rowSums(counts_data > 0),
+    stringsAsFactors = FALSE
+  )
+  
+  # Sort by total reads (descending)
+  result <- result[order(-result$Total_Reads), ]
+  
+  return(result)
+}
+
+# Create tables for platform-specific ASVs
+aviti_table <- create_platform_table(aviti_only, "Aviti", tse_rar, aviti_samples)
+miseq_table <- create_platform_table(miseq_only, "MiSeq", tse_rar, miseq_samples)
+
+# Analyze abundance of platform-specific ASVs
+cat("\n\n=== Abundance Analysis of Platform-Specific ASVs ===\n\n")
+
+total_aviti_reads <- sum(counts[, aviti_samples])
+total_miseq_reads <- sum(counts[, miseq_samples])
+
+aviti_specific_reads <- sum(aviti_table$Total_Reads)
+miseq_specific_reads <- sum(miseq_table$Total_Reads)
+
+abundance_summary <- data.frame(
+  Platform = c("Aviti", "MiSeq"),
+  Platform_Specific_ASVs = c(length(aviti_only), length(miseq_only)),
+  Total_Reads_in_Specific = c(aviti_specific_reads, miseq_specific_reads),
+  Percent_of_Total_Reads = c(
+    round(aviti_specific_reads/total_aviti_reads * 100, 2),
+    round(miseq_specific_reads/total_miseq_reads * 100, 2)
+  )
+)
+
+kable(abundance_summary, format = "html") %>%
+  kable_styling(bootstrap_options = "striped")
+
+# Save full tables to files
+write_tsv(aviti_table, "aviti_only_asvs.tsv")
+write_tsv(miseq_table, "miseq_only_asvs.tsv")
+
+```
+
+Finally, we calculate platform-specific ASVs after removing rare variants (n\<100).
+
+```{r variant_filtering, size = "small"}
+
+# Filter ASVs with total abundance < 10 across all samples
+counts <- assay(tse_rar, "counts2")
+abundant_asvs <- rownames(counts)[rowSums(counts) >= 100]
+
+# Recalculate platform-specific ASVs with filtered data
+aviti_asvs_filt <- abundant_asvs[rowSums(counts[abundant_asvs, aviti_samples] > 0) > 0]
+miseq_asvs_filt <- abundant_asvs[rowSums(counts[abundant_asvs, miseq_samples] > 0) > 0]
+
+shared_filt <- intersect(aviti_asvs_filt, miseq_asvs_filt)
+aviti_only_filt <- setdiff(aviti_asvs_filt, miseq_asvs_filt)
+miseq_only_filt <- setdiff(miseq_asvs_filt, aviti_asvs_filt)
+
+# Compare results
+cat("=== Before filtering (all ASVs) ===\n")
+cat("Shared:", length(shared), "\n")
+cat("Aviti-only:", length(aviti_only), "\n")
+cat("MiSeq-only:", length(miseq_only), "\n")
+cat("Percent shared:", round(length(shared)/length(union(aviti_asvs, miseq_asvs))*100, 1), "%\n\n")
+
+cat("=== After filtering (total abundance >= 100) ===\n")
+cat("Shared:", length(shared_filt), "\n")
+cat("Aviti-only:", length(aviti_only_filt), "\n")
+cat("MiSeq-only:", length(miseq_only_filt), "\n")
+cat("Percent shared:", round(length(shared_filt)/length(union(aviti_asvs_filt, miseq_asvs_filt))*100, 1), "%\n")
+
+```
+
+After filtering rare variants, \>90% of platform-specific variants were removed. This further supports the hypothesis that both platforms yield nearly identical results. It is also worth noting that a single nucleotide difference will render sequences as distinct ASVs.
