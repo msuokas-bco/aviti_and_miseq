@@ -72,7 +72,7 @@ Download the SILVA reference files and place them in `~/reference/`:
 
 SILVA reference files are available from the [DADA2 taxonomy reference page](https://benjjneb.github.io/dada2/training.html).
 
----
+´´´
 
 ## Project Structure
 
